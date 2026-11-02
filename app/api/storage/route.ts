@@ -1,0 +1,1 @@
+export async function GET(){return Response.json({configured:!!(process.env.CLOUDINARY_CLOUD_NAME&&process.env.CLOUDINARY_API_KEY&&process.env.CLOUDINARY_API_SECRET),provider:'Cloudinary',maxMB:10});}
