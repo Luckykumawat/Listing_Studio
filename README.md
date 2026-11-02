@@ -73,3 +73,46 @@ No live Cloudinary upload test has run without owner credentials. No real seller
 - .env.example: credential variable names only
 
 For hosted deployment, use the Sites workflow with .openai/hosting.json, set secrets with the native environment-variable tool, build, package and deploy privately. Ordinary Next.js hosting requires adapting the Vinext starter scripts to standard Next scripts; this is not a vanilla Next deployment.
+
+## Host this GitHub repository on Cloudflare Workers
+
+The original Sites deployment and the standalone Cloudflare deployment use separate build commands. This repository includes a standalone configuration that works without the ChatGPT Sites login proxy.
+
+1. In Cloudflare, open **Workers & Pages → Create application → Import a repository** (the label can also appear as Connect GitHub).
+2. Connect GitHub and select `Luckykumawat/Listing_Studio`. Grant access only to this repository when possible.
+3. Set the Worker name to **listing-studio** and production branch to **main**.
+4. Use these commands:
+
+   | Setting | Value |
+   |---|---|
+   | Root directory | repository root |
+   | Build command | `npm run build:cloudflare` |
+   | Deploy command | `npm run deploy:cloudflare` |
+   | Preview deploy command, if enabled | `npx wrangler versions upload --config dist/server/wrangler.json` |
+
+5. After creating the Worker, add these five **runtime secrets** under Settings → Variables and Secrets. Use Cloudinary's existing credentials and choose a separate strong login password for the app:
+
+   - `CLOUDINARY_CLOUD_NAME`
+   - `CLOUDINARY_API_KEY`
+   - `CLOUDINARY_API_SECRET`
+   - `APP_USERNAME` (letters/numbers; do not include a colon)
+   - `APP_PASSWORD` (long, unique password)
+
+   These belong in runtime settings, not in source code or build-time variables. Credentials configured on the original ChatGPT Site are not automatically copied to your Cloudflare account.
+
+6. Deploy. Open the generated HTTPS `workers.dev` URL from any device. The browser asks for your `APP_USERNAME` and `APP_PASSWORD`.
+7. Check **Settings → Image hosting** in the app, then test one image and one workbook.
+
+Without APP_USERNAME and APP_PASSWORD the standalone Worker deliberately returns HTTP 503. Incorrect or missing login returns HTTP 401. The password gate protects the HTML, API routes and static assets. Keep the app password private. Do not use your Cloudinary secret as the app password. Cloudinary image URLs themselves remain public so Meesho can retrieve them.
+
+Changes pushed to main can be built and deployed automatically by Cloudflare's Git integration. Cloudflare may ask you to authorize its GitHub application; the account owner must complete this step. See https://developers.cloudflare.com/workers/ci-cd/builds/configuration/ . The app does not require a custom domain or a local computer to stay running.
+
+Local standalone check:
+
+```sh
+npm run build:cloudflare
+# Put runtime values in ignored .dev.vars for local development.
+npm run preview:cloudflare
+```
+
+The standalone build uses `vite.cloudflare.config.ts` and `worker/cloudflare.ts`. The original `npm run build` command still builds the Sites version. Never deploy the original unprotected Sites Worker directly to a public Cloudflare account.
