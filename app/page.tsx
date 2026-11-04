@@ -1,4 +1,5 @@
 'use client';
+import { imageDigest, uploadDirect } from '../lib/direct-upload';
 import React,{useEffect,useRef,useState} from 'react';
 import {ArrowRight,ArrowLeft,Check,ChevronRight,CloudUpload,FileSpreadsheet,Images,Layers3,Settings2,Download,Plus,Trash2,ShieldCheck,FolderOpen,RotateCcw,Save,Search,X,LoaderCircle} from 'lucide-react';
 import {populateWorkbook} from '../lib/workbook.mjs';
@@ -20,7 +21,59 @@ export default function Studio(){
  function load(name:string){const p=profiles.find(p=>p.name===name);if(!p)return;PN(p.name);A(p.account);C(p.counter);TT(p.title);M(p.maps);FB(p.fallback);MK(p.marker);H(p.header);SR(p.start);SH(p.headers||[]);if(wb?.getWorksheet(p.sheetName))SN(p.sheetName);N('Profile loaded. Confirm column headers against the current template.');}
  function validate(){if(!sheet)throw Error('Upload a template first.');if(new Set(maps).size!==5||maps.some(m=>!Number.isInteger(m)||m<1||m>16384))throw Error('Choose five separate, valid columns.');if(!Number.isInteger(start)||start<=header||start+selected.length>1048577)throw Error('Starting row must be below the header and within Excel limits.');if(!selected.length)throw Error('Select at least one image.');if(models.length!==1)throw Error('This batch contains multiple models. Filter to exactly one model.');if(title.replaceAll('${modelName}',model).length>32767)throw Error('Title exceeds the Excel cell limit of 32,767 characters.');if(!model.trim())throw Error('Enter the model name.');if(selected.some(i=>!i.url))throw Error('Upload all selected images before generating.');if(savedHeaders.length&&maps.some((m,i)=>savedHeaders[i]&&savedHeaders[i]!==text(sheet.getCell(header,m).value)))throw Error('Saved profile headers changed. Review mappings and save this profile again.');}
  function dropdown(book:any){const s=book.getWorksheet(sheetName);const dv=s.getCell(start,maps[1]).dataValidation;if(!dv?.type||dv.type!=='list')return model;const f=dv.formulae?.[0];let vals:string[]=[];if(typeof f==='string'&&f.startsWith('"'))vals=f.slice(1,-1).split(',');else if(typeof f==='string'){let range=f.replace(/^=/,'');const defined=book.definedNames.getRanges(range)?.ranges?.[0];if(defined)range=defined;const parts=range.split('!');const target=parts.length>1?book.getWorksheet(parts[0].replace(/^'|'$/g,'').replaceAll("''","'")):s;const address=parts.at(-1)?.replaceAll('$','');const match=address?.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i);if(!target||!match)throw Error('Dropdown source cannot be resolved. Use a supported list or range validation.');for(let r=Number(match[2]);r<=Number(match[4])&&vals.length<20000;r++)vals.push(text(target.getCell(`${match[1]}${r}`).value));}const found=vals.find(v=>v.trim().toLowerCase()===model.trim().toLowerCase());if(found)return found;const other=vals.find(v=>v.trim().toLowerCase()===fallback.trim().toLowerCase());if(!other)throw Error('Fallback is not an allowed dropdown value. Update the fallback.');return other;}
- async function upload(){E('');if(models.length!==1){E('Filter images to a single model first.');return;}B(true);cancel.current=false;for(const item of selected){if(cancel.current)break;if(item.url)continue;try{const fd=new FormData();fd.set('file',item.file);const r=await fetch('/api/upload',{method:'POST',body:fd});const d:any=await r.json();if(!r.ok)throw Error(d.error);I(prev=>prev.map(i=>i===item?{...i,url:d.url,error:undefined}:i));}catch(e){I(prev=>prev.map(i=>i===item?{...i,error:(e as Error).message}:i));}}B(false);}
+ async function upload() {
+  E('');
+  if (models.length !== 1) { E('Filter images to a single model first.'); return; }
+  B(true);
+  cancel.current = false;
+  const pending = selected.filter(item => !item.url);
+  const update = (item: Item, result: Partial<Item>) => {
+   I(previous => previous.map(current => current === item ? { ...current, ...result } : current));
+  };
+
+  try {
+   for (let offset = 0; offset < pending.length && !cancel.current; offset += 200) {
+    const batch = pending.slice(offset, offset + 200);
+    const valid: { item: Item; digest: string }[] = [];
+    for (const item of batch) {
+     if (cancel.current) break;
+     try {
+      valid.push({ item, digest: await imageDigest(item.file) });
+     } catch (error) {
+      update(item, { error: (error as Error).message });
+     }
+    }
+    if (cancel.current || !valid.length) continue;
+
+    const response = await fetch('/api/upload/sign', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify(valid.map(entry => entry.digest)),
+    });
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || 'Could not authorize uploads.');
+
+    let next = 0;
+    async function uploadNext() {
+     while (!cancel.current && next < valid.length) {
+      const index = next++;
+      const { item } = valid[index];
+      try {
+       const url = await uploadDirect(item.file, data.cloud, data.uploads[index]);
+       update(item, { url, error: undefined });
+      } catch (error) {
+       update(item, { error: (error as Error).message });
+      }
+     }
+    }
+    await Promise.all(Array.from({ length: Math.min(5, valid.length) }, uploadNext));
+   }
+  } catch (error) {
+   E((error as Error).message);
+  } finally {
+   B(false);
+  }
+ }
  async function generate(){E('');B(true);try{validate();const ExcelJS=await import('exceljs');const book=new ExcelJS.Workbook();await book.xlsx.load(await wb.xlsx.writeBuffer());const s=book.getWorksheet(sheetName)!;const rows=rowsFor(model,account,counter,title,selected.map(i=>i.url!),dropdown(book));let extras:{col:number,value:string}[]=[];for(const line of fixed.split('\n').filter(Boolean)){const match=line.match(/^([A-Za-z]+)=(.*)$/);if(!match)throw Error('Fixed values must use COLUMN=value, one per line.');extras.push({col:columnNumber(match[1]),value:match[2]});}const clearing=clear.split(',').map(v=>v.trim()).filter(Boolean).map(columnNumber);if(extras.some(e=>maps.includes(e.col))||new Set(extras.map(e=>e.col)).size!==extras.length)throw Error('Additional columns conflict with a mapped field.');populateWorkbook(s,{start,maps,rows,clearing,extras,allow,model});const data=await book.xlsx.writeBuffer();const url=URL.createObjectURL(new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const a=document.createElement('a');a.href=url;a.download=safeFilename(model)+'.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);N(`${rows.length} rows generated. Workbook downloaded.`);}catch(e){E((e as Error).message);}finally{B(false);}}
  function columnNumber(v:string){if(!/^[a-z]{1,3}$/i.test(v))throw Error('Use valid column letters.');const n=v.toUpperCase().split('').reduce((a,c)=>a*26+c.charCodeAt(0)-64,0);if(n>16384)throw Error('Column exceeds Excel limits.');return n;}
  const steps=['Template & columns','Listing details','Product images','Review & download'];
